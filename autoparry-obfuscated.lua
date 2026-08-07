@@ -14,7 +14,7 @@ do
 	end
 end
 local Config = {
-	Version       = "V175",
+	Version       = "V176",
 	Enabled       = false,
 	Mode          = "Perfect",
 
@@ -169,6 +169,7 @@ local Config = {
 
 	DeepDiag           = true,
 	TraceDiag          = false,
+	PerfProbe          = true,   -- лёгкий аудит: раз/сек лог [perf] threats/step-ms/willHitMe-per-s/GPBB-per-s/fps
 
 	BoxingCounter     = false,
 	BoxingCounterReach= 5.5,
@@ -917,6 +918,7 @@ local realHitboxHitsMe = LPH_NO_VIRTUALIZE(function(ownerName, th)
 	if V93.hbChar ~= char then params.FilterDescendantsInstances = { char }; V93.hbChar = char end
 
 	-- РЕАЛЬНЫЙ игровой тест 1:1 как VictimHitboxServiceClient: пересекает ли хитбокс нас ПРЯМО СЕЙЧАС.
+	if Config.PerfProbe then V93.probeGPBB = (V93.probeGPBB or 0) + 1 end
 	local realHit = #Workspace:GetPartBoundsInBox(part.CFrame, part.Size, params) > 0
 	if realHit and not th.hbOverlapClock then
 		th.hbOverlapClock, th.hbOverlapServer = os.clock(), Workspace:GetServerTimeNow()
@@ -947,6 +949,7 @@ local realHitboxHitsMe = LPH_NO_VIRTUALIZE(function(ownerName, th)
 		end
 		local lead = math.clamp((Config.OverlapLeadBase or 2.0) + sp * leadTime, 0, Config.OverlapLeadCap or 18.0)
 		local infl = part.Size + Vector3.new(lead * 2, lead, lead * 2)
+		if Config.PerfProbe then V93.probeGPBB = (V93.probeGPBB or 0) + 1 end
 		hit = #Workspace:GetPartBoundsInBox(part.CFrame, infl, params) > 0
 		if hit and not th.gtLeadClock then
 			th.gtLeadClock = os.clock()
@@ -1072,6 +1075,7 @@ local hitboxGeom = function(th)
 end
 
 local willHitMe = LPH_NO_VIRTUALIZE(function(th)
+	if Config.PerfProbe then V93.probeWHM = (V93.probeWHM or 0) + 1 end
 	local myHRP, aHRP = localHRP(), th.attackerHRP
 	if not myHRP then return Config.FilterFailSafe end
 	if not aHRP or not aHRP.Parent then
@@ -1142,11 +1146,14 @@ local willHitMe = LPH_NO_VIRTUALIZE(function(th)
 						velToMe = mvx * toMeX + mvz * toMeZ
 					end
 				end
-				local avOk, av = pcall(function() return aHRP.AssemblyLinearVelocity end)
-				if avOk and av then
-					local physVel = av.X * toMeX + av.Z * toMeZ
-					if physVel > velToMe then velToMe = physVel end
-				end
+				-- прямое чтение вместо pcall(function()...) — aHRP.Parent проверен выше (1077),
+					-- willHitMe не делает yield, чтение AssemblyLinearVelocity на живом BasePart не
+					-- бросает ошибку. Убирает аллокацию closure на КАЖДУЮ угрозу КАЖДЫЙ кадр (GC).
+					local av = aHRP.AssemblyLinearVelocity
+					if av then
+						local physVel = av.X * toMeX + av.Z * toMeZ
+						if physVel > velToMe then velToMe = physVel end
+					end
 				if velToMe > 0.5 then
 					approachAllow = math.clamp(velToMe * dtc, 0, Config.HighApproachCap or 10.0)
 				end
@@ -3146,7 +3153,7 @@ function State.ap.fireM1(model, why, priority, dropGuard)
 		-- Она version-proof (сама читает combo/anim/cooldown и шлёт ServerCheck
 		-- изнутри), поэтому переживает обновления игры. Хрупкий fast-path
 		-- (fireM1Custom с debug.setupvalue по индексам upvalue) включается только
-		-- если пользователь ЯВНО отключил AP_ForceNativeM1 — при обновлении игры
+		-- если пользователь ЯВНО отключил AP_ForceNativeM1 — при обновлении ��гры
 		-- индексы протухаю��, setupvalue пишет мусор и серве�� отклоняет свинг =
 		-- "autoplay не бьёт, а раз не бьёт — стоит и не парирует".
 		local useFast = ap.fireOK and (Config.AP_ForceNativeM1 == false)
@@ -3314,8 +3321,8 @@ end
 local refreshContact = function(th)
 	local now = os.clock()
 	if th.kind == "M2" and not th.variantLocked and th.attackerModel then
-		local okv, av = pcall(function() return th.attackerModel:GetAttribute("M2VariantId") end)
-		if okv and type(av) == "string" and av ~= "" then
+		local av = th.attackerModel:GetAttribute("M2VariantId")
+		if type(av) == "string" and av ~= "" then
 			th.variantLocked = true
 			if av ~= th.variant then
 				local prev = th.hitTL
@@ -5896,7 +5903,7 @@ local restrictStep = LPH_NO_VIRTUALIZE(function(now)
 end)
 
 V93.schedulerPhase = RunService.PreSimulation and "PreSimulation" or "Heartbeat-fallback"
-;(RunService.PreSimulation or RunService.Heartbeat):Connect(function(hbDt)
+;(RunService.PreSimulation or RunService.Heartbeat):Connect(LPH_NO_VIRTUALIZE(function(hbDt)
 	if type(hbDt) == "number" and hbDt > 0 then
 		local d = math.clamp(hbDt, 1/480, 0.25)
 		V93.frameDt = V93.frameDt + (d - V93.frameDt) * 0.2
@@ -5936,8 +5943,27 @@ V93.schedulerPhase = RunService.PreSimulation and "PreSimulation" or "Heartbeat-
 			if wantDodgeSteer then pcall(V93.humMove, hum, State.ap.dodgeSteerDir) end
 		end
 	end
+	local stepT0 = os.clock()
 	pcall(schedulerStep, now)
-	V93.stepCost = V93.stepCost + ((os.clock() - now) - V93.stepCost) * 0.15
+	local stepMs = os.clock() - stepT0
+	V93.stepCost = V93.stepCost + (stepMs - V93.stepCost) * 0.15
+	if Config.PerfProbe then
+		if not V93.probeLast then V93.probeLast = now end
+		if stepMs > (V93.probeStepPeak or 0) then V93.probeStepPeak = stepMs end
+		local tn = #Threats
+		if tn > (V93.probeThreatPeak or 0) then V93.probeThreatPeak = tn end
+		V93.probeFrames = (V93.probeFrames or 0) + 1
+		local elapsed = now - (V93.probeLast or now)
+		if elapsed >= 1 then
+			local inv = 1 / math.max(elapsed, 0.001)
+			aclog(string.format(
+				"[perf] threats(peak)=%d | schedulerStep avg=%.2fms peak=%.2fms | willHitMe=%.0f/s GetPartBoundsInBox=%.0f/s | fps~%.0f",
+				V93.probeThreatPeak or 0, (V93.stepCost or 0) * 1000, (V93.probeStepPeak or 0) * 1000,
+				(V93.probeWHM or 0) * inv, (V93.probeGPBB or 0) * inv, (V93.probeFrames or 0) * inv))
+			V93.probeLast = now
+			V93.probeWHM, V93.probeGPBB, V93.probeStepPeak, V93.probeThreatPeak, V93.probeFrames = 0, 0, 0, 0, 0
+		end
+	end
 	pcall(restrictStep, now)
 
 	if State.guardUp and not State.blocking then
@@ -5956,7 +5982,7 @@ V93.schedulerPhase = RunService.PreSimulation and "PreSimulation" or "Heartbeat-
 	if not State.blocking and State.status ~= "THREAT" then
 		if now >= State.flashUntil then State.status = "ARMED" end
 	end
-end)
+end))
 
 local function summary()
 	local t = State.tally
