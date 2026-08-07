@@ -1,8 +1,9 @@
+-- packed by Syllinse pack.lua — run through Luraph before shipping. Do not edit.
 return function(Lib, Core)
-    local C = Core
-    if type(C) ~= "table" or type(C.__unlock) ~= "function" or type(C.__n) ~= "string" then
-        return nil
-    end
+        local C = Core
+        if type(C) ~= "table" or type(C.__unlock) ~= "function" or type(C.__n) ~= "string" then
+            return nil
+        end
 
         -- Luraph macro raw-mode shim. You may NOT declare a local/variable named
         -- LPH_* — Luraph reserves that prefix. So we install an identity fallback
@@ -121,11 +122,10 @@ return function(Lib, Core)
         local fn = loadstring(src, "=" .. NAME)
         if not fn then return end
 
-        -- inner module body returns a function(Lib, Core) → table{buildUI,start,stop}
-        -- (same shape as a non-packed module: loader calls chunk()(Lib, Core))
+        -- module body: return function(Lib, Core) → {buildUI, start, stop}
         local real = fn()
         if type(real) == "function" then
-            real = real(Lib, C)
+            return real(Lib, C)
         end
         return real
 end
